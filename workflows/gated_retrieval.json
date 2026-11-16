@@ -1,0 +1,385 @@
+{
+  "name": "GenX - Workflow B - Gated Retrieval",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "coaching-chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "11111111-1111-4111-8111-000000000014",
+      "name": "Webhook (Chat)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Intent router: pure greetings are answered statically and never reach\n// the embedding model or the database.\nconst GREETING_PATTERN =\n  /^\\s*(hello|hi+|hey+|howdy|greetings)(\\s+there)?[\\s!.]*$|^\\s*good\\s+(morning|afternoon|evening)[\\s!.]*$/i;\n\nconst STATIC_GREETING =\n  \"Hello, I'm Dr. Sara Hegy's coaching assistant. Ask me about a leadership \" +\n  'situation \u2014 delegation, difficult feedback, executive presence \u2014 and I ' +\n  'will answer from documented coaching sessions.';\n\nreturn $input.all().map((item) => {\n  const message = String(\n    item.json.message ?? item.json.chatInput ?? item.json.query ?? '',\n  ).trim();\n  const isGreeting = GREETING_PATTERN.test(message);\n  return {\n    json: {\n      message,\n      is_greeting: isGreeting,\n      answer: isGreeting ? STATIC_GREETING : '',\n    },\n  };\n});\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "11111111-1111-4111-8111-000000000015",
+      "name": "Greeting Router",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "greet",
+              "leftValue": "={{ $json.is_greeting }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "11111111-1111-4111-8111-000000000016",
+      "name": "Is Greeting? (IF)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answer: $json.answer }) }}",
+        "options": {}
+      },
+      "id": "11111111-1111-4111-8111-000000000017",
+      "name": "Respond Greeting",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EMBEDDING_URL || 'http://host.docker.internal:11434/v1/embeddings' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.EMBEDDING_MODEL || 'bge-m3', input: $json.message }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "11111111-1111-4111-8111-000000000018",
+      "name": "Embed Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the query embedding from the embedding HTTP response and keep\n// the original question alongside it for the SQL node and the LLM node.\nconst routerItem = $('Greeting Router').first().json;\n\nfunction extractEmbedding(json) {\n  if (Array.isArray(json?.data?.[0]?.embedding)) return json.data[0].embedding;\n  if (Array.isArray(json?.embeddings?.[0])) return json.embeddings[0];\n  if (Array.isArray(json?.embedding)) return json.embedding;\n  return null;\n}\n\nconst embedding = extractEmbedding($input.first().json);\n\nreturn [\n  {\n    json: {\n      message: routerItem.message ?? '',\n      query_vector: embedding ? `[${embedding.join(',')}]` : '[]',\n      embedding_dims: embedding ? embedding.length : 0,\n    },\n  },\n];\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "11111111-1111-4111-8111-000000000019",
+      "name": "Prepare Query Vector",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "(\n  SELECT session_id, stream_type, content, metadata,\n         1 - (embedding <=> $1::vector) AS similarity\n  FROM knowledge_vault\n  WHERE stream_type = 'framework'\n    AND 1 - (embedding <=> $1::vector) >= 0.70\n  ORDER BY embedding <=> $1::vector\n  LIMIT 2\n)\nUNION ALL\n(\n  SELECT session_id, stream_type, content, metadata,\n         1 - (embedding <=> $1::vector) AS similarity\n  FROM knowledge_vault\n  WHERE stream_type = 'voice_sample'\n    AND 1 - (embedding <=> $1::vector) >= 0.65\n  ORDER BY embedding <=> $1::vector\n  LIMIT 2\n)\nORDER BY similarity DESC;",
+        "options": {
+          "queryReplacement": "={{ $json.query_vector }}"
+        }
+      },
+      "id": "11111111-1111-4111-8111-000000000020",
+      "name": "Gated Retrieval (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1100,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": null,
+          "name": "GenX Postgres (host: db, database: genx_rag)"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Zero-match circuit breaker + context builder.\n// Zero rows above the SQL thresholds -> short_circuit = true with the exact\n// fallback sentence; the IF node downstream then answers directly and the\n// LLM node is never executed.\nconst FALLBACK = 'No documented coaching frameworks match this topic.';\n\nconst rows = $input\n  .all()\n  .map((item) => item.json)\n  .filter((row) => row && typeof row.content === 'string' && row.content.length > 0);\n\nconst frameworks = rows.filter((row) => row.stream_type === 'framework');\nconst voiceSamples = rows.filter((row) => row.stream_type === 'voice_sample');\n\nif (rows.length === 0) {\n  return [{ json: { short_circuit: true, answer: FALLBACK, context: '', match_count: 0 } }];\n}\n\nconst render = (list) =>\n  list\n    .map((row) => `[${row.session_id} | similarity ${Number(row.similarity).toFixed(3)}]\\n${row.content}`)\n    .join('\\n\\n');\n\nconst context = [\n  frameworks.length ? `FRAMEWORKS:\\n${render(frameworks)}` : '',\n  voiceSamples.length ? `VOICE SAMPLES (mirror this tone):\\n${render(voiceSamples)}` : '',\n]\n  .filter(Boolean)\n  .join('\\n\\n');\n\nreturn [\n  {\n    json: {\n      short_circuit: false,\n      answer: '',\n      context,\n      match_count: rows.length,\n      framework_count: frameworks.length,\n      voice_sample_count: voiceSamples.length,\n    },\n  },\n];\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "11111111-1111-4111-8111-000000000021",
+      "name": "Circuit Breaker + Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "sc",
+              "leftValue": "={{ $json.short_circuit }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "11111111-1111-4111-8111-000000000022",
+      "name": "Has Matches? (IF)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answer: $json.answer }) }}",
+        "options": {}
+      },
+      "id": "11111111-1111-4111-8111-000000000023",
+      "name": "Respond Fallback",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LLM_CHAT_URL || 'http://host.docker.internal:11434/v1/chat/completions' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.LLM_MODEL || 'llama3.2', temperature: 0.3, messages: [ { role: 'system', content: \"You are Dr. Sara Hegy's coaching assistant. Answer ONLY from the CONTEXT provided: explain the framework from the FRAMEWORKS section, in the speaking style of the VOICE SAMPLES section \\u2014 direct, structural, calm. Lead with the reframe, name the framework, give one diagnostic question, end with one concrete next step.\\n\\nExample 1 (positive few-shot)\\nQuestion: How should I approach an underperforming VP?\\nAnswer: The reality is that top performers don't decay overnight without structural friction. Before you schedule an uncomfortable confrontation, run the Table and Shoulder Test: isolate neurological load from operational drift. Sit across from him as an architect, not an interrogator, and ask: 'Where is the internal system fighting you right now?' If the breakdown is structural, redesign the container. If it is capacity, make a clean, dignified transition. Run the diagnosis tomorrow and report back.\\n\\nExample 2 (positive few-shot)\\nQuestion: I check everything my team produces. How do I stop?\\nAnswer: Look \\u2014 micromanagement is almost never an ego problem. It is an information architecture breakdown. Use Completion with Integrity: define the binary exit criteria before anyone starts, and enforce the pre-agreed handoff constraints instead of asking 'How is this going?' When clarity goes up, surveillance drops to zero. This week, define exit criteria for one initiative and step away from the daily review.\" }, { role: 'user', content: 'CONTEXT:\\n' + $json.context + '\\n\\nQUESTION:\\n' + $('Greeting Router').first().json.message } ] }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "11111111-1111-4111-8111-000000000024",
+      "name": "Persona LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pull the assistant text out of an OpenAI-compatible / Ollama chat reply.\nconst json = $input.first().json;\nconst answer =\n  json?.choices?.[0]?.message?.content ?? json?.message?.content ?? json?.response ?? '';\nreturn [{ json: { answer: String(answer).trim() } }];\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "11111111-1111-4111-8111-000000000025",
+      "name": "Extract Answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answer: $json.answer }) }}",
+        "options": {}
+      },
+      "id": "11111111-1111-4111-8111-000000000026",
+      "name": "Respond Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2200,
+        560
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook (Chat)": {
+      "main": [
+        [
+          {
+            "node": "Greeting Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Greeting Router": {
+      "main": [
+        [
+          {
+            "node": "Is Greeting? (IF)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Greeting? (IF)": {
+      "main": [
+        [
+          {
+            "node": "Respond Greeting",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Embed Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Query": {
+      "main": [
+        [
+          {
+            "node": "Prepare Query Vector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Query Vector": {
+      "main": [
+        [
+          {
+            "node": "Gated Retrieval (Postgres)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gated Retrieval (Postgres)": {
+      "main": [
+        [
+          {
+            "node": "Circuit Breaker + Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Circuit Breaker + Context": {
+      "main": [
+        [
+          {
+            "node": "Has Matches? (IF)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Matches? (IF)": {
+      "main": [
+        [
+          {
+            "node": "Respond Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Persona LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persona LLM": {
+      "main": [
+        [
+          {
+            "node": "Extract Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Answer": {
+      "main": [
+        [
+          {
+            "node": "Respond Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

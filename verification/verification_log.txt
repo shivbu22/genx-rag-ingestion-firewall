@@ -1,0 +1,47 @@
+========================================================================
+GENX PIPELINE - LOGIC SIMULATION (stand-ins labelled in the docstring)
+========================================================================
+
+SES-101  'Weekly Strategy Session'  turns=6 sampled=6
+  classifier (stand-in): Client Coaching  confidence=0.93  - Coach advising an external client on leadership behaviour.
+  GATE: PASS (>= 0.8) -> knowledge_vault
+  coach (team member): Dr. Sara Hegy
+  framework chunks: 1   voice_sample chunks: 2 (chars: [683, 154])
+
+SES-102  'Executive Catch-up'  turns=6 sampled=6
+  classifier (stand-in): Client Coaching  confidence=1.00  - Coach advising an external client on leadership behaviour.
+  GATE: PASS (>= 0.8) -> knowledge_vault
+  coach (team member): Dr. Sara Hegy
+  framework chunks: 1   voice_sample chunks: 2 (chars: [655, 132])
+
+SES-103  'Technical Sync & Integrations'  turns=5 sampled=5
+  classifier (stand-in): Internal Operations  confidence=1.00  - Internal technical sync: sprint, integrations and infra.
+  GATE: REJECT -> rejected_sessions (flat archive, NO embeddings)
+  archived: meeting_type=Internal Operations  confidence=1.00
+
+SES-104  'Partnership Discovery Call'  turns=5 sampled=5
+  classifier (stand-in): Sales Discovery  confidence=1.00  - Prospect call centred on pricing, budget and contract terms.
+  GATE: REJECT -> rejected_sessions (flat archive, NO embeddings)
+  archived: meeting_type=Sales Discovery  confidence=1.00
+
+------------------------------------------------------------------------
+knowledge_vault rows (simulated): 6  (2 framework, 4 voice_sample)
+rejected_sessions rows (simulated): 2  -> ['SES-103', 'SES-104']
+
+------------------------------------------------------------------------
+WORKFLOW B - GATED RETRIEVAL
+
+  query: 'Hello!'
+  greeting regex match: True -> static greeting returned, NO embedding, NO database call
+
+  query: 'How do I fix my database index?'  (off-domain)
+  rows passing the gate (stand-in): 0
+  CIRCUIT BREAKER: LLM not called. Fallback returned:
+  "No documented coaching frameworks match this topic."
+
+  query: 'How should I approach an underperforming VP - what is operational drift?'  (on-domain, bonus check)
+  rows passing the gate (stand-in): 2 from sessions ['SES-102'] -> context built, persona LLM would be called
+
+========================================================================
+SIMULATION RESULT: PASS - SES-101/102 ingested, SES-103/104 rejected, greeting intercepted, off-domain query hit the circuit-breaker fallback.
+========================================================================
